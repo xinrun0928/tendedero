@@ -14,6 +14,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// ignores the screenshot settings (macOS 27 renamed one), captures keep
     /// landing on the Desktop, and they still hang on the line.
     private var safetyWatcher: ScreenshotWatcher?
+    /// Optional: hangs images copied to the clipboard, for capture tools
+    /// like Snipaste that never write a file of their own.
+    private var clipboard: ClipboardWatcher?
     private var signalSources: [DispatchSourceSignal] = []
     private var hotKey: HotKey?
     private var cancellables = Set<AnyCancellable>()
@@ -54,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if Inbox.isEnabled { Inbox.apply() }
         restoreSettingsOnTermination()
         startWatcher()
+        updateClipboardWatcher()
 
         hotKey = HotKey(keyCode: kVK_ANSI_T, modifiers: controlKey | optionKey) { [weak self] in
             self?.toggle()
@@ -141,6 +145,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Inbox.isEnabled = on
         if on { Inbox.apply() } else { Inbox.restore() }
         startWatcher()
+    }
+
+    // MARK: Clipboard images
+
+    /// The user's choice, kept across launches. Off by default: a clipboard
+    /// that changes on its own would fill the line unasked.
+    private var clipboardHangEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "clipboardHang") }
+        set { UserDefaults.standard.set(newValue, forKey: "clipboardHang") }
+    }
+
+    private func updateClipboardWatcher() {
+        clipboard?.stop()
+        clipboard = nil
+        guard clipboardHangEnabled else { return }
+        let watcher = ClipboardWatcher { [weak self] url in self?.hangCapture(url) }
+        watcher.start()
+        clipboard = watcher
     }
 
     /// Asked once. Changing system settings is the user's call, never ours.
@@ -481,6 +503,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         inbox.toolTip = L("Screenshots hang instantly and skip the Desktop",
                           "Las capturas se cuelgan al instante y no pasan por el Escritorio")
         menu.addItem(inbox)
+
+        let clipboardItem = ClosureMenuItem(L("Hang clipboard images", "Colgar imágenes del portapapeles")) { [weak self] in
+            guard let self else { return }
+            self.clipboardHangEnabled.toggle()
+            self.updateClipboardWatcher()
+        }
+        clipboardItem.state = clipboardHangEnabled ? .on : .off
+        clipboardItem.toolTip = L("An image copied to the clipboard hangs too, for tools like Snipaste",
+                                  "Una imagen copiada al portapapeles también se cuelga, para herramientas como Snipaste")
+        menu.addItem(clipboardItem)
 
         menu.addItem(ClosureMenuItem(L("Open screenshots folder", "Abrir carpeta de capturas")) { [weak self] in
             guard let self else { return }
